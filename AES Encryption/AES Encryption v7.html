@@ -1,0 +1,193 @@
+<!doctype html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AES-GCM Encryptor — Text & File (v7)</title>
+<style>
+  body{margin:0;padding:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:#071022;color:#e6eef8;display:flex;justify-content:center;align-items:flex-start;min-height:100vh}
+  .card{background:#0b1220;padding:24px;border-radius:12px;max-width:980px;width:96%;box-shadow:0 8px 24px rgba(2,6,23,.6);margin:20px auto}
+  textarea,input,select{width:100%;padding:10px;margin-top:8px;border-radius:8px;border:1px solid #23314a;background:#071021;color:#e6eef8;box-sizing:border-box}
+  .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  button{padding:8px 12px;border-radius:8px;border:none;background:#2563eb;color:white;cursor:pointer;flex:1;min-width:120px}
+  .muted{color:#9fb0d1;font-size:13px}
+  label{display:block;margin-top:12px}
+  code{background:#071827;padding:2px 6px;border-radius:6px}
+  h2,h3{margin-top:0}
+  #toast-container{position:fixed;bottom:20px;right:20px;z-index:9999}
+  .toast{min-width:220px;margin-top:8px;padding:12px 16px;border-radius:8px;color:white;font-weight:500;animation:fadein .25s,fadeout .25s 2.5s}
+  .success{background:#16a34a}
+  .error{background:#dc2626}
+  .warning{background:#f59e0b}
+  .info{background:#3b82f6}
+  @keyframes fadein{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes fadeout{from{opacity:1}to{opacity:0;transform:translateY(12px)}}
+  svg.icon{width:16px;height:16px;vertical-align:middle;}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>AES-GCM Encryptor — Text & File (v7)</h2>
+  <p class="muted">Now encrypts file metadata (original filename & extension) as part of the AES payload — nothing about the file is readable without the passphrase.</p><label>Passphrase (shared)</label> <input id="pass" type="text" placeholder="Enter passphrase">
+
+  <div class="row">
+    <label class="half">PBKDF2 iterations</label>
+    <input id="iters" type="number" class="half" value="150000" min="1000" step="1000">
+  </div><label>Output Encoding (text)</label> <select id="encoding"> <option value="base64">Base64</option> <option value="hex">Hex</option> <option value="bytes">Base-256</option> </select>
+
+  <hr style="margin:16px 0;border:0;border-top:1px solid #23314a">
+  <h3>Text Encrypt / Decrypt</h3>
+  <label>Plaintext / Input</label>
+  <textarea id="plain" rows="6" placeholder="Type plaintext to encrypt or paste encoded input to decrypt..."></textarea>
+  <div class="row">
+    <button id="encryptText"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 13l4 4L19 7"/></svg>Encrypt</button>
+    <button id="decryptText"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13l-4 4L5 7"/></svg>Decrypt</button>
+    <button id="copyOut"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9l7 7v9a2 2 0 0 1-2 2z"/></svg>Copy Output</button>
+    <button id="downloadTextEnc"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 20h14v-2H5v2zM7 10l5 5 5-5H13V4h-2v6H7z"/></svg>Download (.enc)</button>
+    <button id="uploadTextEnc"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13v6H5v-6H3l9-9 9 9h-2z"/></svg>Upload (.enc)</button>
+    <button id="clearText"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM8 9h8v10H8V9zm3-7h2v2h-2V2z"/></svg>Clear</button>
+  </div>
+  <label>Output</label>
+  <textarea readonly id="out" rows="6" placeholder="Result appears here..."></textarea>  <hr style="margin:16px 0;border:0;border-top:1px solid #23314a">
+  <h3>File Encrypt / Decrypt (metadata encrypted)</h3>
+  <input type="file" id="fileInput">
+  <div class="row">
+    <button id="encryptFile"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M5 13l4 4L19 7"/></svg>Encrypt File</button>
+    <button id="decryptFile"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13l-4 4L5 7"/></svg>Decrypt File</button>
+    <button id="uploadFileEnc"><svg class="icon" viewBox="0 0 24 24"><path fill="currentColor" d="M19 13v6H5v-6H3l9-9 9 9h-2z"/></svg>Upload .enc File</button>
+  </div>
+  <p class="muted">When encrypting you'll be asked for a base name (no extension). Tool saves <code>basename.enc</code>. The original full filename (including extension) is stored <strong>encrypted</strong> in the AES payload and only recovered after successful decryption. On decrypt the original extension is suggested and appended automatically.</p>
+</div>
+<div id="toast-container"></div>
+<script>
+// Toast
+function showToast(msg,type='info'){const t=document.createElement('div');t.className='toast '+type;t.textContent=msg;document.getElementById('toast-container').appendChild(t);setTimeout(()=>t.remove(),3000);}
+
+// Converters
+function bufToBase64(buf){const b=new Uint8Array(buf);let s='';for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s);} 
+function base64ToBuf(s){const bin=atob(s);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);return arr.buffer;} 
+function bufToHex(buf){const b=new Uint8Array(buf);let out='';for(const x of b){let h=x.toString(16);if(h.length===1)h='0'+h;out+=h;}return out;} 
+function hexToBuf(hex){const clean=hex.replace(/[^0-9a-fA-F]/g,'');if(clean.length%2!==0)throw new Error('Invalid hex');const arr=new Uint8Array(clean.length/2);for(let i=0;i<arr.length;i++)arr[i]=parseInt(clean.substr(i*2,2),16);return arr.buffer;} 
+function bufToBytesString(buf){return Array.from(new Uint8Array(buf)).join(',');} 
+function bytesStringToBuf(s){const parts=s.split(/[,\s]+/).filter(x=>x);const arr=new Uint8Array(parts.length);for(let i=0;i<parts.length;i++){const n=Number(parts[i]);if(!Number.isFinite(n)||n<0||n>255)throw new Error('Invalid byte at '+i);arr[i]=n;}return arr.buffer;} 
+
+// Crypto helpers (WebCrypto)
+async function deriveKey(pass,salt,iters){const enc=new TextEncoder();const baseKey=await crypto.subtle.importKey('raw',enc.encode(pass),{name:'PBKDF2'},false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:iters,hash:'SHA-256'},baseKey,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function aesEncrypt(rawBuf,pass,iters){const salt=crypto.getRandomValues(new Uint8Array(16));const iv=crypto.getRandomValues(new Uint8Array(12));const key=await deriveKey(pass,salt.buffer,iters);const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,rawBuf);const combined=new Uint8Array(16+12+ct.byteLength);combined.set(salt,0);combined.set(iv,16);combined.set(new Uint8Array(ct),28);return combined.buffer;}
+async function aesDecrypt(combinedBuf,pass,iters){const combined=new Uint8Array(combinedBuf);if(combined.length<29)throw new Error('Input too short');const salt=combined.slice(0,16).buffer;const iv=combined.slice(16,28).buffer;const ct=combined.slice(28).buffer;const key=await deriveKey(pass,salt,iters);return crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(iv)},key,ct);} 
+
+// header helpers for packed payload (meta encrypted with file)
+function writeUint32BE(n){return new Uint8Array([(n>>>24)&0xff,(n>>>16)&0xff,(n>>>8)&0xff,n&0xff]);}
+function readUint32BE(bytes,off){return (bytes[off]<<24) | (bytes[off+1]<<16) | (bytes[off+2]<<8) | (bytes[off+3]);}
+
+// DOM refs
+const plainEl=document.getElementById('plain');
+const outEl=document.getElementById('out');
+const passEl=document.getElementById('pass');
+const itersEl=document.getElementById('iters');
+const encSel=document.getElementById('encoding');
+const fileInput=document.getElementById('fileInput');
+
+// --- Text handlers ---
+document.getElementById('encryptText').addEventListener('click',async()=>{
+ try{
+  const pass=passEl.value; if(!pass){showToast('Enter passphrase','warning'); return}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  const raw=new TextEncoder().encode(plainEl.value);
+  const combined=await aesEncrypt(raw,pass,iters);
+  let out=''; if(encSel.value==='base64') out=bufToBase64(combined); else if(encSel.value==='hex') out=bufToHex(combined); else out=bufToBytesString(combined);
+  outEl.value=out; showToast('Text encrypted','success');
+ }catch(e){showToast('Encrypt failed: '+e.message,'error');}
+});
+
+document.getElementById('decryptText').addEventListener('click',async()=>{
+ try{
+  const pass=passEl.value; if(!pass){showToast('Enter passphrase','warning'); return}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  const input=plainEl.value.trim(); if(!input){showToast('Paste encoded input','warning'); return}
+  let buf; if(encSel.value==='base64') buf=base64ToBuf(input); else if(encSel.value==='hex') buf=hexToBuf(input); else buf=bytesStringToBuf(input);
+  const plainBuf=await aesDecrypt(buf,pass,iters);
+  outEl.value=new TextDecoder().decode(plainBuf); showToast('Text decrypted','success');
+ }catch(e){showToast('Decrypt failed: '+e.message,'error');}
+});
+
+document.getElementById('copyOut').addEventListener('click',()=>{navigator.clipboard.writeText(outEl.value);showToast('Copied','info');});
+
+document.getElementById('clearText').addEventListener('click',()=>{plainEl.value='';outEl.value='';passEl.value='';});
+
+document.getElementById('downloadTextEnc').addEventListener('click',async()=>{
+ try{ if(!outEl.value){showToast('Nothing to download','warning'); return} let buf; if(encSel.value==='base64') buf=base64ToBuf(outEl.value); else if(encSel.value==='hex') buf=hexToBuf(outEl.value); else buf=bytesStringToBuf(outEl.value); const filename=prompt('Filename for download','message.enc')||'message.enc'; const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([buf])); a.download=filename; a.click(); showToast('Downloaded','success'); }catch(e){showToast('Download failed: '+e.message,'error');}
+});
+
+document.getElementById('uploadTextEnc').addEventListener('click',()=>{const f=document.createElement('input');f.type='file';f.accept='.enc';f.onchange=async()=>{const file=f.files[0];if(!file){showToast('No file','warning');return}const buf=await file.arrayBuffer();plainEl.value=bufToBase64(buf);encSel.value='base64';outEl.value='';showToast('Loaded into input','info')};f.click();});
+
+// --- File handlers (metadata encrypted inside AES payload) ---
+async function encryptFile(){
+  const f=fileInput.files[0]; if(!f){showToast('Select a file','warning'); return}
+  const pass=passEl.value; if(!pass){showToast('Enter passphrase','warning'); return}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  try{
+    const fileBuf=await f.arrayBuffer();
+    // metadata to include (encrypted with file data)
+    const meta = { origName: f.name };
+    const metaStr = JSON.stringify(meta);
+    const metaBytes = new TextEncoder().encode(metaStr);
+    const metaLen = writeUint32BE(metaBytes.length);
+    // build payload: [metaLen(4)] [metaBytes] [fileBytes]
+    const payload = new Uint8Array(4 + metaBytes.length + fileBuf.byteLength);
+    payload.set(metaLen,0);
+    payload.set(metaBytes,4);
+    payload.set(new Uint8Array(fileBuf),4+metaBytes.length);
+    // encrypt whole payload
+    const combined = await aesEncrypt(payload.buffer, pass, iters); // gives salt+iv+ct
+    // prompt base name (no ext)
+    const baseDefault = f.name.replace(/\.[^\.]+$/,'');
+    let base = prompt('Enter base name for encrypted file (no extension)', baseDefault);
+    if(base === null){ showToast('Cancelled','info'); return }
+    base = base.replace(/\.[^\.]+$/,'');
+    const outName = base + '.enc';
+    const blob = new Blob([combined], {type:'application/octet-stream'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = outName; a.click();
+    showToast('Saved '+outName,'success');
+  }catch(e){ showToast('Encrypt failed: '+e.message,'error'); }
+}
+
+async function decryptFile(){
+  const f=fileInput.files[0]; if(!f){showToast('Select a file','warning'); return}
+  const pass=passEl.value; if(!pass){showToast('Enter passphrase','warning'); return}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  try{
+    const combinedBuf = await f.arrayBuffer();
+    // decrypt combined -> payload
+    const payloadBuf = await aesDecrypt(combinedBuf, pass, iters); // may throw
+    const payload = new Uint8Array(payloadBuf);
+    if(payload.length < 4) { showToast('Invalid payload','error'); return }
+    const metaLen = readUint32BE(payload,0);
+    const metaStart = 4; const metaEnd = 4 + metaLen;
+    if(metaEnd > payload.length){ showToast('Invalid metadata length','error'); return }
+    const metaBytes = payload.slice(metaStart, metaEnd);
+    const metaStr = new TextDecoder().decode(metaBytes);
+    let meta; try{ meta = JSON.parse(metaStr); }catch(e){ showToast('Bad metadata','error'); return }
+    const fileBytes = payload.slice(metaEnd).buffer;
+    // original name
+    const origName = meta.origName || 'decrypted_file';
+    const extMatch = origName.match(/(\.[^\.]+)$/); const ext = extMatch ? extMatch[1] : '';
+    const origBase = origName.replace(/\.[^\.]+$/,'');
+    let base = prompt('Save as (base name only). Original extension will be restored:', origBase);
+    if(base === null){ showToast('Cancelled','info'); return }
+    base = base.replace(/\.[^\.]+$/,'');
+    const outName = base + ext;
+    const blob = new Blob([fileBytes], {type:'application/octet-stream'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = outName; a.click();
+    showToast('Saved '+outName,'success');
+  }catch(e){ showToast('Decrypt failed: '+e.message,'error'); }
+}
+
+// UI wiring
+document.getElementById('encryptFile').addEventListener('click', encryptFile);
+document.getElementById('decryptFile').addEventListener('click', decryptFile);
+document.getElementById('uploadFileEnc').addEventListener('click', ()=>{ const inp=document.createElement('input'); inp.type='file'; inp.accept='.enc'; inp.onchange=()=>{ fileInput.files = inp.files; showToast('File ready','info'); }; inp.click(); });
+
+</script></body>
+</html>

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AES-GCM Encryptor — Text & File (v3)</title>
+<style>
+  body {margin:0;padding:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:#071022;color:#e6eef8;display:flex;justify-content:center;align-items:flex-start;min-height:100vh;}
+  .card {background:#0b1220;padding:24px;border-radius:12px;max-width:900px;width:95%;box-shadow:0 8px 24px rgba(2,6,23,.6);margin:20px auto;}
+  textarea,input,select{width:100%;padding:10px;margin-top:8px;border-radius:8px;border:1px solid #23314a;background:#071021;color:#e6eef8;box-sizing:border-box;}
+  .row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  button{padding:8px 12px;border-radius:8px;border:none;background:#2563eb;color:white;cursor:pointer;flex:1;min-width:120px}
+  .muted{color:#9fb0d1;font-size:13px}
+  label{display:block;margin-top:12px}
+  code{background:#071827;padding:2px 6px;border-radius:6px}
+  h2,h3{margin-top:0}
+  #toast-container{position:fixed;bottom:20px;right:20px;z-index:9999;}
+  .toast{min-width:200px;margin-top:8px;padding:12px 16px;border-radius:8px;color:white;font-weight:500;animation:fadein 0.5s,fadeout 0.5s 2.5s;}
+  .success{background:#16a34a;}
+  .error{background:#dc2626;}
+  .warning{background:#f59e0b;}
+  .info{background:#3b82f6;}
+  @keyframes fadein{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);}}
+  @keyframes fadeout{from{opacity:1;}to{opacity:0;transform:translateY(20px);}}
+</style>
+</head>
+<body>
+<div class="card">
+<h2>AES-GCM Demo — Text & File Encryption (v3)</h2>
+<p class="muted">Encrypt/Decrypt text or files locally. Outputs look like gibberish. No data leaves your machine.</p>
+
+<label>Passphrase (shared for text & file)</label>
+<input id="pass" type="text" placeholder="Enter a secret passphrase">
+
+<div class="row">
+<label class="half">PBKDF2 iterations</label>
+<input id="iters" type="number" class="half" value="150000" min="1000" step="1000">
+</div>
+
+<label>Output Encoding</label>
+<select id="encoding">
+<option value="base64">Base64</option>
+<option value="hex">Hex</option>
+<option value="bytes">Base-256 (comma-separated)</option>
+<option value="raw">Raw binary (.enc)</option>
+</select>
+
+<hr style="margin:16px 0;border:0;border-top:1px solid #23314a">
+<h3>Text Encryption/Decryption</h3>
+<label>Plaintext / Input</label>
+<textarea id="plain" rows="6" placeholder="Type plaintext to encrypt or paste encoded input to decrypt..."></textarea>
+<div class="row">
+<button id="encryptText">Encrypt</button>
+<button id="decryptText">Decrypt</button>
+<button id="copyOut">Copy Output</button>
+<button id="downloadTextEnc">Download (.enc)</button>
+<button id="uploadTextEnc">Upload (.enc)</button>
+<button id="clearText">Clear Fields</button>
+</div>
+<label>Output</label>
+<textarea id="out" rows="6" placeholder="Result appears here..."></textarea>
+
+<hr style="margin:16px 0;border:0;border-top:1px solid #23314a">
+<h3>File Encryption/Decryption</h3>
+<input type="file" id="fileInput">
+<div class="row">
+<button id="encryptFile">Encrypt File</button>
+<button id="decryptFile">Decrypt File</button>
+<button id="uploadFileEnc">Upload .enc File</button>
+</div>
+<p class="muted">Encrypted files saved as <code>.enc</code>. Decrypted files restore original filename and extension. Renameable during download.</p>
+</div>
+
+<div id="toast-container"></div>
+
+<script>
+function showToast(msg,type='info'){const t=document.createElement('div');t.className='toast '+type;t.textContent=msg;document.getElementById('toast-container').appendChild(t);setTimeout(()=>t.remove(),3000);}
+
+// Conversion utils
+function bufToBase64(buf){const b=new Uint8Array(buf);let s='';for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s);}
+function base64ToBuf(s){const bin=atob(s);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);return arr.buffer;}
+function bufToHex(buf){const b=new Uint8Array(buf);let s='';for(const x of b){let h=x.toString(16);if(h.length==1)h='0'+h;s+=h;}return s;}
+function hexToBuf(hex){const h=hex.replace(/[^0-9a-fA-F]/g,'');if(h.length%2!=0)throw new Error('Invalid hex');const arr=new Uint8Array(h.length/2);for(let i=0;i<arr.length;i++)arr[i]=parseInt(h.substr(i*2,2),16);return arr.buffer;}
+function bufToBytesString(buf){return Array.from(new Uint8Array(buf)).join(',');}
+function bytesStringToBuf(s){const parts=s.split(/[,\s]+/).filter(x=>x);const arr=new Uint8Array(parts.length);for(let i=0;i<parts.length;i++){const n=Number(parts[i]);if(n<0||n>255)throw new Error('Invalid byte at '+i);arr[i]=n;}return arr.buffer;}
+
+// Crypto helpers
+async function deriveKey(pass,salt,iters){const enc=new TextEncoder();const k=await crypto.subtle.importKey('raw',enc.encode(pass),{name:'PBKDF2'},false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:iters,hash:'SHA-256'},k,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function encryptAES(buf,pass,iters){const salt=crypto.getRandomValues(new Uint8Array(16));const iv=crypto.getRandomValues(new Uint8Array(12));const key=await deriveKey(pass,salt.buffer,iters);const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv:iv},key,buf);const combined=new Uint8Array(16+12+ct.byteLength);combined.set(salt,0);combined.set(iv,16);combined.set(new Uint8Array(ct),28);return combined.buffer;}
+async function decryptAES(buf,pass,iters){const arr=new Uint8Array(buf);if(arr.length<29)throw new Error('Input too short');const salt=arr.slice(0,16).buffer;const iv=arr.slice(16,28).buffer;const ct=arr.slice(28).buffer;const key=await deriveKey(pass,salt,iters);return crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(iv)},key,ct);}
+
+// DOM
+const plainEl=document.getElementById('plain');
+const outEl=document.getElementById('out');
+const passEl=document.getElementById('pass');
+const itersEl=document.getElementById('iters');
+const encSel=document.getElementById('encoding');
+const fileInput=document.getElementById('fileInput');
+
+// Text handlers
+document.getElementById('encryptText').addEventListener('click',async()=>{
+ try{
+  const pass=passEl.value;if(!pass){showToast('Enter passphrase','warning');return;}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  const enc=new TextEncoder();
+  const buf=await encryptAES(enc.encode(plainEl.value),pass,iters);
+  const encType=encSel.value;
+  let out;
+  if(encType==='base64') out=bufToBase64(buf);
+  else if(encType==='hex') out=bufToHex(buf);
+  else if(encType==='bytes') out=bufToBytesString(buf);
+  else out=bufToBase64(buf);
+  outEl.value=out;
+  showToast('Text encrypted!','success');
+ }catch(e){showToast('Encryption failed: '+e.message,'error');}
+});
+
+document.getElementById('decryptText').addEventListener('click',async()=>{
+ try{
+  const pass=passEl.value;if(!pass){showToast('Enter passphrase','warning');return;}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  let buf;
+  const input=plainEl.value.trim();if(!input){showToast('Paste encoded input','warning');return;}
+  const encType=encSel.value;
+  if(encType==='base64') buf=base64ToBuf(input);
+  else if(encType==='hex') buf=hexToBuf(input);
+  else if(encType==='bytes') buf=bytesStringToBuf(input);
+  else buf=base64ToBuf(input);
+  const plainBuf=await decryptAES(buf,pass,iters);
+  outEl.value=new TextDecoder().decode(plainBuf);
+  showToast('Text decrypted!','success');
+ }catch(e){showToast('Decryption failed: '+e.message,'error');}
+});
+
+document.getElementById('copyOut').addEventListener('click',()=>{navigator.clipboard.writeText(outEl.value);showToast('Copied to clipboard','info');});
+document.getElementById('clearText').addEventListener('click',()=>{plainEl.value='';outEl.value='';passEl.value='';});
+
+document.getElementById('downloadTextEnc').addEventListener('click',async()=>{
+ try{
+  if(!outEl.value){showToast('Nothing to download','warning');return;}
+  let buf;
+  const encType=encSel.value;
+  if(encType==='base64') buf=base64ToBuf(outEl.value);
+  else if(encType==='hex') buf=hexToBuf(outEl.value);
+  else if(encType==='bytes') buf=bytesStringToBuf(outEl.value);
+  else buf=base64ToBuf(outEl.value);
+  const filename=prompt('Enter filename for download','message.enc')||'message.enc';
+  const blob=new Blob([buf],{type:'application/octet-stream'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;a.click();
+  showToast('File downloaded','success');
+ }catch(e){showToast('Download failed: '+e.message,'error');}
+});
+
+// Upload .enc text for decryption (now loads into input box)
+document.getElementById('uploadTextEnc').addEventListener('click',()=>{
+ const f=document.createElement('input');f.type='file';f.accept='.enc';f.onchange=async()=>{
+  const file=f.files[0];if(!file){showToast('No file selected','warning');return;}
+  const buf=await file.arrayBuffer();
+  plainEl.value=bufToBase64(buf);
+  outEl.value='';
+  encSel.value='base64';
+  showToast('File loaded into input box','info');
+ };f.click();
+});
+
+// File handlers
+document.getElementById('encryptFile').addEventListener('click',async()=>{
+ const f=fileInput.files[0];
+ if(!f){showToast('Select a file first','warning');return;}
+ try{
+  const pass=passEl.value;if(!pass){showToast('Enter passphrase','warning');return;}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  const buf=await f.arrayBuffer();
+  const encBuf=await encryptAES(buf,pass,iters);
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([encBuf]));
+  a.download=f.name+'.enc';
+  a.click();
+  showToast('File encrypted and downloaded','success');
+ }catch(e){showToast('File encryption failed: '+e.message,'error');}
+});
+
+document.getElementById('decryptFile').addEventListener('click',async()=>{
+ const f=fileInput.files[0];
+ if(!f){showToast('Select a file first','warning');return;}
+ try{
+  const pass=passEl.value;if(!pass){showToast('Enter passphrase','warning');return;}
+  const iters=Math.max(1000,Number(itersEl.value)||150000);
+  const buf=await f.arrayBuffer();
+  const plainBuf=await decryptAES(buf,pass,iters);
+  const name=f.name.replace(/\.enc$/,'');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([plainBuf]));
+  a.download=name||'decrypted_file';
+  a.click();
+  showToast('File decrypted and downloaded','success');
+ }catch(e){showToast('File decryption failed: '+e.message,'error');}
+});
+
+// Upload .enc file to set for decryption
+document.getElementById('uploadFileEnc').addEventListener('click',()=>{
+ const f=document.createElement('input');f.type='file';f.accept='.enc';f.onchange=()=>{fileInput.files=f.files;showToast('File ready for decryption','info');};f.click();
+});
+</script>
+</body>
+</html>
